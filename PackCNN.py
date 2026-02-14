@@ -6,23 +6,168 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ["DATA_DIR"] = os.path.join(project_root, "ICML_2026_PackCNN", "data")
 # os.environ["DATA_DIR"] = "/data/test/data"
 import pickle
-import torch
-from examples.utils.load import use_checkpoint
-import torch.fhe as fhe
 import time
 import math
 import numpy as np
 import csv
 from examples.utils import approx
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from examples.max.GELU import homo_gelu
-from torch.utils.data import Dataset, DataLoader
-import torch, gc
-from examples.resnet.gen_aespa_weights.HerPN import get_Aespa_MutalChannel_PAF_resnet18, get_Aespa_MutalChannel_PAF_resnet20
+import torch.fhe as fhe
+from examples.resnet.gen_weights.HerPN import  get_Aespa_MutalChannel_PAF_resnet20
 block_num1=3
-from examples.utils.load import use_checkpoint
+
+
+def dump_cts_nd(ct_list, ct_list_shape, file_path):
+
+    assert len(ct_list_shape) >= 1, "ct_list_shape must be non-empty"
+
+    dump_ct = []
+
+    def _dump_one(ct, idx):
+        if ct is None:
+            print("None at", idx)
+            return
+        tmp = ct.deep_copy().cpu()
+        tmp.cv = [tmp.cv[0].numpy(), tmp.cv[1].numpy()]
+        dump_ct.append(tmp)
+
+    def _traverse(node, shape, idx_prefix):
+        if len(shape) == 0:
+            _dump_one(node, idx_prefix)
+            return
+
+        limit = shape[0]
+        if node is None:
+            print("None subtree at", idx_prefix)
+            return
+
+        n = min(limit, len(node))
+        for i in range(n):
+            _traverse(node[i], shape[1:], idx_prefix + (i,))
+
+    _traverse(ct_list, ct_list_shape, ())
+
+    with open(file_path, "wb") as f:
+        pickle.dump({"cts": dump_ct, "ct_list_shape": ct_list_shape}, f)
+
+def dump_cts(ct_list, ct_list_shape, file_path):
+    assert len(ct_list_shape) ==2 or len(ct_list_shape) ==1, "only support two/one dim input ct_list now"
+    dump_ct = []
+    if len(ct_list_shape) ==2:
+        for i, row in enumerate(ct_list):
+            if i >= ct_list_shape[0]:
+                break
+            for j, ct in enumerate(row):
+                if j >= ct_list_shape[1]:
+                    break
+                if ct is None:
+                    print("index", j)
+                else:
+                    tmp = ct.deep_copy().cpu()
+                    tmp.cv = [tmp.cv[0].numpy(), tmp.cv[1].numpy()]
+                    dump_ct.append(tmp)
+    else:
+        for j, ct in enumerate(ct_list):
+            if j >= ct_list_shape[0]:
+                break
+            if ct is None:
+                print("index", j)
+            else:
+                tmp = ct.deep_copy().cpu()
+                tmp.cv = [tmp.cv[0].numpy(), tmp.cv[1].numpy()]
+                dump_ct.append(tmp)
+
+    with open(file_path, "wb") as f:
+        pickle.dump({"cts": dump_ct, "ct_list_shape": ct_list_shape}, f)
+
+
+def load_cts(file_path, device="cpu"):
+    data = pickle.load(open(file_path, "rb"))
+    ct_list, ct_list_shape = data["cts"], data["ct_list_shape"]
+    ct_list = reshape_ct_list(ct_list, ct_list_shape)
+    print(f"len(ct_list) {len(ct_list)}")
+    if (len(ct_list_shape)>1):
+        print(f"len(ct_list[0]) {len(ct_list[0])}")
+
+    for row in ct_list:
+        if len(ct_list_shape)==1:
+            row = [row]
+        for ct in row:
+            ct.cv = [torch.from_numpy(ct.cv[0]).to(device), torch.from_numpy(ct.cv[1]).to(device)]
+
+    return ct_list, ct_list_shape
+
+
+def reshape_ct_list(ct_list, ct_list_shape):
+
+    if len(ct_list_shape) == 1:
+        return ct_list
+
+    if ct_list_shape[0]==1:
+        reshaped_ct_list = [ct_list]
+    elif ct_list_shape[0]==2:
+        half_len_ct_list = len(ct_list)//2
+        reshaped_ct_list = [ct_list[:half_len_ct_list], ct_list[half_len_ct_list:]]
+    else:
+        raise Exception("ct_list shape is not supported.")
+
+    return reshaped_ct_list
+def load_cts_nd(file_path, device="cpu", return_as="ndarray"):
+    with open(file_path, "rb") as f:
+        data = pickle.load(f)
+
+    flat_cts = data["cts"]              
+    ct_list_shape = data["ct_list_shape"]
+
+    total_elements = np.prod(ct_list_shape)
+    assert len(flat_cts) == total_elements, \
+        f"number is error"
+
+    for ct in flat_cts:
+        if ct is not None:  
+            ct.cv = [
+                torch.from_numpy(ct.cv[0]).to(device),
+                torch.from_numpy(ct.cv[1]).to(device)
+            ]
+
+    if return_as == "ndarray":
+        ct_array = np.array(flat_cts, dtype=object).reshape(ct_list_shape)
+        return ct_array, ct_list_shape
+
+    elif return_as == "nested_list":
+        def _reshape_flat_to_nested(flat_list, shape):
+            if len(shape) == 1:
+                return flat_list
+            sub_size = np.prod(shape[1:])
+            nested = []
+            for i in range(shape[0]):
+                start = i * sub_size
+                end = start + sub_size
+                nested.append(_reshape_flat_to_nested(flat_list[start:end], shape[1:]))
+            return nested
+
+        ct_nested = _reshape_flat_to_nested(flat_cts, ct_list_shape)
+        return ct_nested, ct_list_shape
+    else:
+        raise ValueError("return_as must be 'ndarray' or 'nested_list'")
+
+
+def use_checkpoint(file_name, mode, cipher_list, ct_list_shape):
+    if mode == "SAVE_CHECKPOINT":
+        print("beging saving checkpoint")
+        dump_cts_nd(cipher_list, ct_list_shape, file_name)
+        print(f"end saving checkpoint into {file_name}")
+    elif mode == "LOAD_CHECKPOINT":
+        print(f"Loading checkpoint {file_name}")
+        if os.path.exists(file_name):
+            cipher_list, dim =load_cts_nd(file_name, "cuda")
+            print("shape of ct list", dim)
+            return cipher_list
+        else:
+            print("file no exist")
+
+        print("end loading checkpoint")
+
 def load_weight(encode_weight_path, cryptoContext):
     if cryptoContext.DIRECT_LOAD:
         time_open = time.time()
@@ -193,7 +338,6 @@ def get_weight_bias(layer, state_dict, index,cryptoContext, eps=1e-5):
                     for q in range(3):
                         Weight1[i, j, p, q] = W[i, j].reshape(9)[q+p*3].detach() * A[i]
         return Weight1
-    return Weight1, Bias1
 def read_image(batch_size):
     filePath = os.path.join(project_root, "ICML_2026_PackCNN", "data", "test_batch.bin")
     IMAGE_SIZE = 3072
@@ -837,7 +981,7 @@ def conv_batch2(input, zero_num_temp, pre_weight_list, pre_weight_list_edge, edg
     output_cipher = np.empty((group_num, wi, wo), dtype=object)
     middle_input = np.empty((group_num, 3, 3, num_in_cipher), dtype=object)
     middle_input.fill(None)
-    flag2=0
+    
     for i in range(group_num):
         for j in range(wo):
             if j < (((wi + 1) / 2) - 1):
@@ -847,76 +991,63 @@ def conv_batch2(input, zero_num_temp, pre_weight_list, pre_weight_list_edge, edg
                             if middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][1], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                             if middle_input[edge_list[i][0][1]][2][2][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][2][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][2], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                         if edge_list[i][5][0] != 0:
                             if middle_input[edge_list[i][5][1]][2][0][edge_list[i][5][0]] is None:
                                 middle_input[edge_list[i][5][1]][2][0][edge_list[i][5][0]] = fhe.homo_rotate(
                                     input[edge_list[i][5][1]][2][0], batch_size * edge_list[i][5][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                         if edge_list[i][3][0] != 0:
                             if middle_input[edge_list[i][3][1]][0][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][0][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][0][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                             if middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][1][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                     if k == 0:
                         if edge_list[i][0][0] != 0:
                             if middle_input[edge_list[i][0][1]][2][0][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][0][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][0], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                             if middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][1], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                         if edge_list[i][4][0] != 0:
                             if middle_input[edge_list[i][4][1]][2][2][edge_list[i][4][0]] is None:
                                 middle_input[edge_list[i][4][1]][2][2][edge_list[i][4][0]] = fhe.homo_rotate(
                                     input[edge_list[i][4][1]][2][2], batch_size * edge_list[i][4][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                         if edge_list[i][2][0] != 0:
                             if middle_input[edge_list[i][2][1]][0][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][0][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][0][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                             if middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][1][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                     if k == 1:
                         if edge_list[i][0][0] != 0:
                             if middle_input[edge_list[i][0][1]][2][0][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][0][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][0], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                             if middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][1], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                             if middle_input[edge_list[i][0][1]][2][2][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][2][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][2], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
             if j == (((wi + 1) / 2) - 1):
                 for k in range(wi):
                     if k == wi - 1:
@@ -924,35 +1055,32 @@ def conv_batch2(input, zero_num_temp, pre_weight_list, pre_weight_list_edge, edg
                             if middle_input[edge_list[i][3][1]][0][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][0][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][0][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                             if middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][1][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                             if middle_input[edge_list[i][3][1]][2][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][2][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][2][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                     if k == 0:
                         if edge_list[i][2][0] != 0:
                             if middle_input[edge_list[i][2][1]][0][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][0][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][0][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][1][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][2][1]][2][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][2][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][2][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 1:
                         pass
             if j > (((wi + 1) / 2) - 1):
@@ -962,76 +1090,68 @@ def conv_batch2(input, zero_num_temp, pre_weight_list, pre_weight_list_edge, edg
                             if middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][1][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][3][1]][2][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][2][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][2][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][7][0] != 0:
                             if middle_input[edge_list[i][7][1]][0][0][edge_list[i][7][0]] is None:
                                 middle_input[edge_list[i][7][1]][0][0][edge_list[i][7][0]] = fhe.homo_rotate(
                                     input[edge_list[i][7][1]][0][0], batch_size * edge_list[i][7][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][1][0] != 0:
                             if middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][1], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][1][1]][0][2][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][2][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][2], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 0:
                         if edge_list[i][1][0] != 0:
                             if middle_input[edge_list[i][1][1]][0][0][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][0][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][0], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                             if middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][1], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                         if edge_list[i][6][0] != 0:
                             if middle_input[edge_list[i][6][1]][0][2][edge_list[i][6][0]] is None:
                                 middle_input[edge_list[i][6][1]][0][2][edge_list[i][6][0]] = fhe.homo_rotate(
                                     input[edge_list[i][6][1]][0][2], batch_size * edge_list[i][6][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                         if edge_list[i][2][0] != 0:
                             if middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][1][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                             if middle_input[edge_list[i][2][1]][2][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][2][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][2][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                     if k == 1:
                         if edge_list[i][1][0] != 0:
                             if middle_input[edge_list[i][1][1]][0][0][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][0][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][0], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                             if middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][1], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
                             if middle_input[edge_list[i][1][1]][0][2][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][2][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][2], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                                
     input_rotate_list = np.zeros((group_num, wi, wo, giant), dtype=object)
     input_rotate_list2 = np.zeros((group_num, wi, wo, num_in_cipher, giant), dtype=object)
     for i in range(group_num):
@@ -1042,13 +1162,12 @@ def conv_batch2(input, zero_num_temp, pre_weight_list, pre_weight_list_edge, edg
                         input_rotate_list[i][q][r][b] = input[i][q][r]
                     else:
                         input_rotate_list[i][q][r][b] = fhe.homo_rotate(input[i][q][r], b * temp, cryptoContext)
-    flag=0
+    
     for i in range(group_num):
         for q in range(3):
             for r in range(3):
                 for k in range(num_in_cipher):
                     if middle_input[i][q][r][k] is not None:
-                        flag+=1
                         for b in range(giant):
                             if b == 0:
                                 input_rotate_list2[i][q][r][k][b] = middle_input[i][q][r][k].deep_copy()
@@ -1087,14 +1206,7 @@ def conv_batch2(input, zero_num_temp, pre_weight_list, pre_weight_list_edge, edg
                                                    fhe.homo_mul_pt(input_temp, weight_encode[b][g], cryptoContext),
                                                    cryptoContext)
         return output_giant
-        for g in range(giant):
-            if g == 0:
-                output = output_giant[g]
-            else:
-                
-                output = fhe.homo_add(output, fhe.homo_rotate(output_giant[g], -baby * g * temp, cryptoContext),
-                                      cryptoContext)
-        return output
+    
     for i in range(group_num):
         for j in range(wo):
             if j < (((wi + 1) / 2) - 1):
@@ -1952,7 +2064,7 @@ def conv_batch2_mod2(input, zero_num_temp, pre_weight_list, pre_weight_list_edge
     output_cipher = np.empty((group_num, wi, wo), dtype=object)
     middle_input = np.empty((group_num, 3, 3, num_in_cipher), dtype=object)
     middle_input.fill(None)
-    flag2=0
+    
     for i in range(group_num):
         for j in range(wo):
             if j < (((wi + 1) / 2) - 1):
@@ -1962,76 +2074,76 @@ def conv_batch2_mod2(input, zero_num_temp, pre_weight_list, pre_weight_list_edge
                             if middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][1], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][0][1]][2][2][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][2][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][2], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][5][0] != 0:
                             if middle_input[edge_list[i][5][1]][2][0][edge_list[i][5][0]] is None:
                                 middle_input[edge_list[i][5][1]][2][0][edge_list[i][5][0]] = fhe.homo_rotate(
                                     input[edge_list[i][5][1]][2][0], batch_size * edge_list[i][5][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][3][0] != 0:
                             if middle_input[edge_list[i][3][1]][0][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][0][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][0][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][1][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 0:
                         if edge_list[i][0][0] != 0:
                             if middle_input[edge_list[i][0][1]][2][0][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][0][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][0], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][1], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][4][0] != 0:
                             if middle_input[edge_list[i][4][1]][2][2][edge_list[i][4][0]] is None:
                                 middle_input[edge_list[i][4][1]][2][2][edge_list[i][4][0]] = fhe.homo_rotate(
                                     input[edge_list[i][4][1]][2][2], batch_size * edge_list[i][4][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][2][0] != 0:
                             if middle_input[edge_list[i][2][1]][0][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][0][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][0][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][1][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 1:
                         if edge_list[i][0][0] != 0:
                             if middle_input[edge_list[i][0][1]][2][0][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][0][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][0], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][1], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][0][1]][2][2][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][2][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][2], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
             if j == (((wi + 1) / 2) - 1):
                 for k in range(wi):
                     if k == wi - 1:
@@ -2039,35 +2151,35 @@ def conv_batch2_mod2(input, zero_num_temp, pre_weight_list, pre_weight_list_edge
                             if middle_input[edge_list[i][3][1]][0][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][0][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][0][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][1][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][3][1]][2][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][2][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][2][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 0:
                         if edge_list[i][2][0] != 0:
                             if middle_input[edge_list[i][2][1]][0][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][0][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][0][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][1][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][2][1]][2][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][2][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][2][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 1:
                         pass
             if j > (((wi + 1) / 2) - 1):
@@ -2077,76 +2189,76 @@ def conv_batch2_mod2(input, zero_num_temp, pre_weight_list, pre_weight_list_edge
                             if middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][1][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][3][1]][2][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][2][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][2][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][7][0] != 0:
                             if middle_input[edge_list[i][7][1]][0][0][edge_list[i][7][0]] is None:
                                 middle_input[edge_list[i][7][1]][0][0][edge_list[i][7][0]] = fhe.homo_rotate(
                                     input[edge_list[i][7][1]][0][0], batch_size * edge_list[i][7][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][1][0] != 0:
                             if middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][1], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][1][1]][0][2][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][2][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][2], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 0:
                         if edge_list[i][1][0] != 0:
                             if middle_input[edge_list[i][1][1]][0][0][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][0][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][0], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][1], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][6][0] != 0:
                             if middle_input[edge_list[i][6][1]][0][2][edge_list[i][6][0]] is None:
                                 middle_input[edge_list[i][6][1]][0][2][edge_list[i][6][0]] = fhe.homo_rotate(
                                     input[edge_list[i][6][1]][0][2], batch_size * edge_list[i][6][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][2][0] != 0:
                             if middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][1][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][2][1]][2][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][2][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][2][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 1:
                         if edge_list[i][1][0] != 0:
                             if middle_input[edge_list[i][1][1]][0][0][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][0][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][0], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][1], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][1][1]][0][2][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][2][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][2], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
     input_rotate_list = np.zeros((group_num, wi, wo, giant), dtype=object)
     input_rotate_list2 = np.zeros((group_num, wi, wo, num_in_cipher, giant), dtype=object)
     for i in range(group_num):
@@ -2157,13 +2269,12 @@ def conv_batch2_mod2(input, zero_num_temp, pre_weight_list, pre_weight_list_edge
                         input_rotate_list[i][q][r][b] = input[i][q][r]
                     else:
                         input_rotate_list[i][q][r][b] = fhe.homo_rotate(input[i][q][r], b * temp, cryptoContext)
-    flag=0
+    
     for i in range(group_num):
         for q in range(3):
             for r in range(3):
                 for k in range(num_in_cipher):
                     if middle_input[i][q][r][k] is not None:
-                        flag+=1
                         for b in range(giant):
                             if b == 0:
                                 input_rotate_list2[i][q][r][k][b] = middle_input[i][q][r][k].deep_copy()
@@ -3093,7 +3204,7 @@ def conv2_batch_extend(input, zero_num_temp, pre_weight_list, pre_weight_list_ed
     output_cipher = np.empty((group_num*repeat, wi, wo), dtype=object)
     middle_input = np.empty((group_num, 3, 3, num_in_cipher), dtype=object)
     middle_input.fill(None)
-    flag2=0
+    
     for i in range(group_num):
         for j in range(wo):
             if j < (((wi + 1) / 2) - 1):
@@ -3103,76 +3214,76 @@ def conv2_batch_extend(input, zero_num_temp, pre_weight_list, pre_weight_list_ed
                             if middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][1], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][0][1]][2][2][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][2][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][2], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][5][0] != 0:
                             if middle_input[edge_list[i][5][1]][2][0][edge_list[i][5][0]] is None:
                                 middle_input[edge_list[i][5][1]][2][0][edge_list[i][5][0]] = fhe.homo_rotate(
                                     input[edge_list[i][5][1]][2][0], batch_size * edge_list[i][5][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][3][0] != 0:
                             if middle_input[edge_list[i][3][1]][0][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][0][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][0][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][1][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 0:
                         if edge_list[i][0][0] != 0:
                             if middle_input[edge_list[i][0][1]][2][0][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][0][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][0], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][1], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][4][0] != 0:
                             if middle_input[edge_list[i][4][1]][2][2][edge_list[i][4][0]] is None:
                                 middle_input[edge_list[i][4][1]][2][2][edge_list[i][4][0]] = fhe.homo_rotate(
                                     input[edge_list[i][4][1]][2][2], batch_size * edge_list[i][4][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][2][0] != 0:
                             if middle_input[edge_list[i][2][1]][0][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][0][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][0][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][1][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 1:
                         if edge_list[i][0][0] != 0:
                             if middle_input[edge_list[i][0][1]][2][0][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][0][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][0], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][1], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][0][1]][2][2][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][2][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][2], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
             if j == (((wi + 1) / 2) - 1):
                 for k in range(wi):
                     if k == wi - 1:
@@ -3180,35 +3291,35 @@ def conv2_batch_extend(input, zero_num_temp, pre_weight_list, pre_weight_list_ed
                             if middle_input[edge_list[i][3][1]][0][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][0][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][0][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][1][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][3][1]][2][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][2][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][2][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 0:
                         if edge_list[i][2][0] != 0:
                             if middle_input[edge_list[i][2][1]][0][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][0][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][0][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][1][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][2][1]][2][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][2][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][2][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 1:
                         pass
             if j > (((wi + 1) / 2) - 1):
@@ -3218,76 +3329,76 @@ def conv2_batch_extend(input, zero_num_temp, pre_weight_list, pre_weight_list_ed
                             if middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][1][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][3][1]][2][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][2][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][2][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][7][0] != 0:
                             if middle_input[edge_list[i][7][1]][0][0][edge_list[i][7][0]] is None:
                                 middle_input[edge_list[i][7][1]][0][0][edge_list[i][7][0]] = fhe.homo_rotate(
                                     input[edge_list[i][7][1]][0][0], batch_size * edge_list[i][7][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][1][0] != 0:
                             if middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][1], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][1][1]][0][2][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][2][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][2], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 0:
                         if edge_list[i][1][0] != 0:
                             if middle_input[edge_list[i][1][1]][0][0][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][0][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][0], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][1], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][6][0] != 0:
                             if middle_input[edge_list[i][6][1]][0][2][edge_list[i][6][0]] is None:
                                 middle_input[edge_list[i][6][1]][0][2][edge_list[i][6][0]] = fhe.homo_rotate(
                                     input[edge_list[i][6][1]][0][2], batch_size * edge_list[i][6][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][2][0] != 0:
                             if middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][1][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][2][1]][2][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][2][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][2][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 1:
                         if edge_list[i][1][0] != 0:
                             if middle_input[edge_list[i][1][1]][0][0][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][0][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][0], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][1], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][1][1]][0][2][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][2][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][2], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
     input_rotate_list = np.zeros((group_num, wi, wo, giant), dtype=object)
     input_rotate_list2 = np.zeros((group_num, wi, wo, num_in_cipher, giant), dtype=object)
     for i in range(group_num):
@@ -3298,13 +3409,12 @@ def conv2_batch_extend(input, zero_num_temp, pre_weight_list, pre_weight_list_ed
                         input_rotate_list[i][q][r][b] = input[i][q][r]
                     else:
                         input_rotate_list[i][q][r][b] = fhe.homo_rotate(input[i][q][r], b * temp, cryptoContext)
-    flag=0
+    
     for i in range(group_num):
         for q in range(3):
             for r in range(3):
                 for k in range(num_in_cipher):
                     if middle_input[i][q][r][k] is not None:
-                        flag+=1
                         for b in range(giant):
                             if b == 0:
                                 input_rotate_list2[i][q][r][k][b] = middle_input[i][q][r][k].deep_copy()
@@ -5004,7 +5114,7 @@ def conv2_batch_extend2(input, zero_num_temp, pre_weight_list, pre_weight_list_e
     output_cipher = np.empty((group_num*repeat, wi, wo), dtype=object)
     middle_input = np.empty((group_num, 3, 3, num_in_cipher), dtype=object)
     middle_input.fill(None)
-    flag2=0
+    
     for i in range(group_num):
         for j in range(wo):
             if j < (((wi + 1) / 2) - 1):
@@ -5014,76 +5124,76 @@ def conv2_batch_extend2(input, zero_num_temp, pre_weight_list, pre_weight_list_e
                             if middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][1], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][0][1]][2][2][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][2][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][2], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][5][0] != 0:
                             if middle_input[edge_list[i][5][1]][2][0][edge_list[i][5][0]] is None:
                                 middle_input[edge_list[i][5][1]][2][0][edge_list[i][5][0]] = fhe.homo_rotate(
                                     input[edge_list[i][5][1]][2][0], batch_size * edge_list[i][5][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][3][0] != 0:
                             if middle_input[edge_list[i][3][1]][0][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][0][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][0][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][1][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 0:
                         if edge_list[i][0][0] != 0:
                             if middle_input[edge_list[i][0][1]][2][0][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][0][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][0], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][1], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][4][0] != 0:
                             if middle_input[edge_list[i][4][1]][2][2][edge_list[i][4][0]] is None:
                                 middle_input[edge_list[i][4][1]][2][2][edge_list[i][4][0]] = fhe.homo_rotate(
                                     input[edge_list[i][4][1]][2][2], batch_size * edge_list[i][4][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][2][0] != 0:
                             if middle_input[edge_list[i][2][1]][0][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][0][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][0][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][1][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 1:
                         if edge_list[i][0][0] != 0:
                             if middle_input[edge_list[i][0][1]][2][0][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][0][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][0], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][1][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][1], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][0][1]][2][2][edge_list[i][0][0]] is None:
                                 middle_input[edge_list[i][0][1]][2][2][edge_list[i][0][0]] = fhe.homo_rotate(
                                     input[edge_list[i][0][1]][2][2], batch_size * edge_list[i][0][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
             if j == (((wi + 1) / 2) - 1):
                 for k in range(wi):
                     if k == wi - 1:
@@ -5091,35 +5201,35 @@ def conv2_batch_extend2(input, zero_num_temp, pre_weight_list, pre_weight_list_e
                             if middle_input[edge_list[i][3][1]][0][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][0][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][0][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][1][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][3][1]][2][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][2][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][2][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 0:
                         if edge_list[i][2][0] != 0:
                             if middle_input[edge_list[i][2][1]][0][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][0][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][0][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][1][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][2][1]][2][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][2][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][2][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 1:
                         pass
             if j > (((wi + 1) / 2) - 1):
@@ -5129,76 +5239,76 @@ def conv2_batch_extend2(input, zero_num_temp, pre_weight_list, pre_weight_list_e
                             if middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][1][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][1][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][3][1]][2][0][edge_list[i][3][0]] is None:
                                 middle_input[edge_list[i][3][1]][2][0][edge_list[i][3][0]] = fhe.homo_rotate(
                                     input[edge_list[i][3][1]][2][0], batch_size * edge_list[i][3][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][7][0] != 0:
                             if middle_input[edge_list[i][7][1]][0][0][edge_list[i][7][0]] is None:
                                 middle_input[edge_list[i][7][1]][0][0][edge_list[i][7][0]] = fhe.homo_rotate(
                                     input[edge_list[i][7][1]][0][0], batch_size * edge_list[i][7][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][1][0] != 0:
                             if middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][1], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][1][1]][0][2][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][2][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][2], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 0:
                         if edge_list[i][1][0] != 0:
                             if middle_input[edge_list[i][1][1]][0][0][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][0][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][0], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][1], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][6][0] != 0:
                             if middle_input[edge_list[i][6][1]][0][2][edge_list[i][6][0]] is None:
                                 middle_input[edge_list[i][6][1]][0][2][edge_list[i][6][0]] = fhe.homo_rotate(
                                     input[edge_list[i][6][1]][0][2], batch_size * edge_list[i][6][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                         if edge_list[i][2][0] != 0:
                             if middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][1][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][1][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][2][1]][2][2][edge_list[i][2][0]] is None:
                                 middle_input[edge_list[i][2][1]][2][2][edge_list[i][2][0]] = fhe.homo_rotate(
                                     input[edge_list[i][2][1]][2][2], batch_size * edge_list[i][2][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                     if k == 1:
                         if edge_list[i][1][0] != 0:
                             if middle_input[edge_list[i][1][1]][0][0][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][0][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][0], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][1][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][1], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
                             if middle_input[edge_list[i][1][1]][0][2][edge_list[i][1][0]] is None:
                                 middle_input[edge_list[i][1][1]][0][2][edge_list[i][1][0]] = fhe.homo_rotate(
                                     input[edge_list[i][1][1]][0][2], batch_size * edge_list[i][1][0], cryptoContext)
-                            else:
-                                flag2+=1
+                            
+                                
     input_rotate_list = np.zeros((group_num, wi, wo, giant), dtype=object)
     input_rotate_list2 = np.zeros((group_num, wi, wo, num_in_cipher, giant), dtype=object)
     for i in range(group_num):
@@ -5209,13 +5319,12 @@ def conv2_batch_extend2(input, zero_num_temp, pre_weight_list, pre_weight_list_e
                         input_rotate_list[i][q][r][b] = input[i][q][r]
                     else:
                         input_rotate_list[i][q][r][b] = fhe.homo_rotate(input[i][q][r], b * temp, cryptoContext)
-    flag=0
+    
     for i in range(group_num):
         for q in range(3):
             for r in range(3):
                 for k in range(num_in_cipher):
                     if middle_input[i][q][r][k] is not None:
-                        flag+=1
                         for b in range(giant):
                             if b == 0:
                                 input_rotate_list2[i][q][r][k][b] = middle_input[i][q][r][k].deep_copy()
@@ -7698,7 +7807,7 @@ def final_weight3(batch_size, in_channel, state_dict, output_channel, height, wi
                                                                              output_channel, height, width, wi,
                                                                              wo,layer)  
     return mask_weight_list1, mask_weight_list3
-@fhe.utils.profile_python_function
+# @fhe.utils.profile_python_function
 def final_weight4(batch_size, in_channel, state_dict, output_channel, height, width, wi, wo, layer, scale, left_edge,
                  right_edge, bottom_edge, up_edge, index,cryptoContext):
     N = 65536
