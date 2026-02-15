@@ -48,6 +48,7 @@ python script.py
 # NOTE: The first-time generation will produce approximately 60GB of .pkl files.
 # WARNING: Make sure DATA_DIR has at least 60GB of free space before running.
 # If the default directory does not have enough space, please modify DATA_DIR to another path with sufficient storage.
+# NOTE: The value of DATA_DIR is defined in PackCNN.py.
 cd ../
 python3 -m ICML_2026_PackCNN.PackCNN 0 0
 
@@ -56,4 +57,5 @@ python3 -m ICML_2026_PackCNN.PackCNN 0 0
 # Accordingly, the runtime command should be modified to: (replace the .pkl filename with the one generated during the first run)
 python3 -m ICML_2026_PackCNN.PackCNN 1 /encode_20260128_150521.pkl
 ```
+
 
