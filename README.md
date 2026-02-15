@@ -46,7 +46,8 @@ python script.py
 # NOTE: During the first-time generation, we need to preprocess (preload/encode) the weights,
 # which takes a relatively long time (about 10 minutes)
 # NOTE: The first-time generation will produce approximately 60GB of .pkl files.
-# If there is not enough disk space, please change the DATA_DIR path to another directory with sufficient storage.
+# WARNING: Make sure DATA_DIR has at least 60GB of free space before running.
+# If the default directory does not have enough space, please modify DATA_DIR to another path with sufficient storage.
 cd ../
 python3 -m ICML_2026_PackCNN.PackCNN 0 0
 
@@ -55,3 +56,4 @@ python3 -m ICML_2026_PackCNN.PackCNN 0 0
 # Accordingly, the runtime command should be modified to: (replace the .pkl filename with the one generated during the first run)
 python3 -m ICML_2026_PackCNN.PackCNN 1 /encode_20260128_150521.pkl
 ```
+
