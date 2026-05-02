@@ -90,13 +90,13 @@ cd ./PNP/EasyFHE/PackCNN
 Before running the main program, please run the setup script to configure the required files:
 
 ```bash
-python script.py
+python3 script.py
 ```
 
 First-time preprocessing/generation:
 
 ```bash
-python run.py 0 0
+python3 run.py 0 0
 ```
 
 Notes:
@@ -108,7 +108,7 @@ Notes:
 After the encoded `.pkl` file has been generated, run inference by passing the generated filename:
 
 ```bash
-python run.py 1 /encode_20260128_150521.pkl
+python3 run.py 1 /encode_20260128_150521.pkl
 ```
 
 
