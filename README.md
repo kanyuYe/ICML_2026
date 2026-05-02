@@ -75,7 +75,7 @@ unzip PackCNN.zip -d ./PNP/EasyFHE/PackCNN
 The code keeps data setting in `pack/config.py`:
 
 ```python
-os.environ["DATA_DIR"] = "/data/test/data"
+os.environ["DATA_DIR"] = os.path.join(project_root, "PackCNN", "data")
 ```
 
 This directory is used for GPU-FHE context files, encrypted input checkpoints, and encoded weight `.pkl` files. Make sure it has enough free space before first-time preprocessing.
