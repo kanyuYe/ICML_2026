@@ -15,7 +15,6 @@ PackCNN/
 │   └── params2.npz
 │   └── test_batch.bin
 └── pack/
-    ├── __init__.py
     ├── bsgs.py
     ├── config.py
     ├── conv.py
