@@ -21,8 +21,7 @@ for path in (
         sys.path.append(path)
 
 # Original DATA_DIR assignments, preserving the effective final value.
-# os.environ["DATA_DIR"] = os.path.join(project_root, "PackCNN", "data")
-os.environ["DATA_DIR"] = "/data/test/data"
-os.environ["DATA_DIR"] = "/data/yky/data"
+os.environ["DATA_DIR"] = os.path.join(project_root, "PackCNN", "data")
+# os.environ["DATA_DIR"] = "/data/test/data"
 
 block_num1 = 3
