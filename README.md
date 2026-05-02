@@ -1,61 +1,119 @@
 # PackCNN
 
-- Install the open-source library **EasyFHE**
+PackCNN is a PPML inference implementation built on EasyFHE/GPU-FHE. The original single-file implementation has been refactored into a small entry script plus a `pack/` Python package. The computation logic and runtime behavior are preserved; the refactor only separates code by responsibility.
 
-- Extract the **anonymous GitHub** files to the specified folder
+## Project Structure
 
-- Run
+```text
+PackCNN/
+├── script.py
+├── run.py
+├── README.md
+├── data/
+│   ├── cifar10_resnet20-4118986f.pt
+│   ├── params1.npz
+│   └── params2.npz
+│   └── test_batch.bin
+└── pack/
+    ├── __init__.py
+    ├── bsgs.py
+    ├── config.py
+    ├── conv.py
+    ├── crypto.py
+    ├── data.py
+    ├── encoding.py
+    ├── model.py
+    ├── pipeline.py
+    └── utils.py
+```
+
+Module responsibilities:
+- `script.py`: script adapted for EasyFHE 
+- `run.py`: short command-line entry point.
+- `pack/pipeline.py`: main inference orchestration.
+- `pack/conv.py`: packed homomorphic convolution, edge handling, and downsampling.
+- `pack/bsgs.py`: BSGS-style plaintext weight preparation.
+- `pack/crypto.py`: encryption helpers, homomorphic ReLU/Aespa, and bootstrapping.
+- `pack/encoding.py`: ciphertext checkpointing and pre-encoded weight loading.
+- `pack/data.py`: CIFAR batch loading and input packing.
+- `pack/model.py`: model weight extraction, average pooling, fully connected layer, and plan selection.
+- `pack/config.py`: runtime paths and configuration state.
+- `pack/utils.py`: shared math/index utilities.
+
+## Installation
+
+Install EasyFHE first:
 
 ```bash
 cd ~
-
-mkdir PNP
-
+mkdir -p PNP
 cd ./PNP
 
 python3 -m venv .venv
-
 source ./.venv/bin/activate
 
-# part 1 :Install the open-source library **EasyFHE
 git clone --recursive -b release-1.0 git@github.com:jizhuoran/EasyFHE.git
-
 cd EasyFHE
 
 pip install -r requirements.txt
 
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
-
 export PATH=$PATH:/usr/local/cuda/bin
-
 export CUDA_HOME=$CUDA_HOME:/usr/local/cuda
 
 USE_DISTRIBUTED=0 USE_MKLDNN=0 BUILD_TEST=0 USE_FBGEMM=0 USE_NNPACK=0 USE_QNNPACK=0 USE_XNNPACK=0 USE_NINJA=OFF USE_ROCM=0 python3 setup.py develop --install-dir=~/torch/
+```
 
+Extract or place this project under the EasyFHE/GPU-FHE workspace:
 
+```bash
+unzip PackCNN.zip -d ./PNP/EasyFHE/PackCNN
+```
 
-# part 2:Extract the **anonymous GitHub** files to the specified folder
-unzip ICML_2026_PackCNN.zip -d ./PNP/EasyFHE/ICML_2026_PackCNN
+## Runtime Data Directory
 
+The refactored code keeps the original runtime setting in `pack/config.py`:
 
-# part 3:Run
-#Before running the main program, please run the setup script to configure the required files.
-cd ./PNP/EasyFHE/ICML_2026_PackCNN
-python script.py 
+```python
+os.environ["DATA_DIR"] = "/data/test/data"
+```
 
-# NOTE: During the first-time generation, we need to preprocess (preload/encode) the weights,
-# which takes a relatively long time (about 10 minutes)
-# NOTE: The first-time generation will produce approximately 60GB of .pkl files.
-# WARNING: Make sure DATA_DIR has at least 60GB of free space before running.
-# If the default directory does not have enough space, please modify DATA_DIR to another path with sufficient storage.
-# NOTE: The value of DATA_DIR is defined in PackCNN.py.
-cd ../
-python3 -m ICML_2026_PackCNN.PackCNN 0 0
+This directory is used for GPU-FHE context files, encrypted input checkpoints, and encoded weight `.pkl` files. Make sure it has enough free space before first-time preprocessing.
 
-# NOTE: After the first run, the .pkl files will be generated.
-# At this point, the code sections responsible for generating the .pkl files should be ignored.
-# Accordingly, the runtime command should be modified to: (replace the .pkl filename with the one generated during the first run)
-python3 -m ICML_2026_PackCNN.PackCNN 1 /encode_20260128_150521.pkl
+## Run
+Before running the main program, please run the setup script to configure the required files:
+
+```bash
+cd ./PNP/EasyFHE/PackCNN
+python script.py
+```
+ 
+Run commands from the project directory:
+
+```bash
+cd ./PNP/GPU-FHE/PackCNN
+```
+
+First-time preprocessing/generation:
+
+```bash
+python run.py 0 0
+```
+
+Notes:
+
+- First-time preprocessing encodes/preloads weights and can take a long time.
+- The generated `.pkl` files can require about 60GB of storage.
+- Make sure `DATA_DIR` has enough free space before running.
+
+After the encoded `.pkl` file has been generated, run inference by passing the generated filename:
+
+```bash
+python run.py 1 /encode_20260128_150521.pkl
 ```
 
 
+
+## Entry Points
+
+`run.py` contains only this entry logic. All business logic is in `pack/pipeline.py` and the supporting modules under `pack/`.

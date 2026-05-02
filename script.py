@@ -47,7 +47,7 @@ with open(herpn_path, "r", encoding="utf-8") as f:
 
 old_line = "model_path = './ResNet20_Aespa.pth'"
 
-indent = " " * 4   
+indent = " " * 4
 
 new_block = (
     "import os\n"
