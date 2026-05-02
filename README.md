@@ -1,6 +1,6 @@
 # PackCNN
 
-PackCNN is a PPML inference implementation built on EasyFHE/GPU-FHE. The original single-file implementation has been refactored into a small entry script plus a `pack/` Python package. The computation logic and runtime behavior are preserved; the refactor only separates code by responsibility.
+PackCNN is a PPML inference implementation built on EasyFHE/GPU-FHE. 
 
 ## Project Structure
 
@@ -72,7 +72,7 @@ unzip PackCNN.zip -d ./PNP/EasyFHE/PackCNN
 
 ## Runtime Data Directory
 
-The refactored code keeps the original runtime setting in `pack/config.py`:
+The code keeps data setting in `pack/config.py`:
 
 ```python
 os.environ["DATA_DIR"] = "/data/test/data"
@@ -81,17 +81,16 @@ os.environ["DATA_DIR"] = "/data/test/data"
 This directory is used for GPU-FHE context files, encrypted input checkpoints, and encoded weight `.pkl` files. Make sure it has enough free space before first-time preprocessing.
 
 ## Run
-Before running the main program, please run the setup script to configure the required files:
-
-```bash
-cd ./PNP/EasyFHE/PackCNN
-python script.py
-```
- 
 Run commands from the project directory:
 
 ```bash
-cd ./PNP/GPU-FHE/PackCNN
+cd ./PNP/EasyFHE/PackCNN
+```
+
+Before running the main program, please run the setup script to configure the required files:
+
+```bash
+python script.py
 ```
 
 First-time preprocessing/generation:
