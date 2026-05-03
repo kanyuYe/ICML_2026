@@ -1,5 +1,3 @@
-"""Packed homomorphic convolution, edge handling, and downsampling."""
-
 from .config import block_num1
 
 import math
