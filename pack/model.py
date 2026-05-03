@@ -8,8 +8,7 @@ import os
 import numpy as np
 import torch
 import torch.fhe as fhe
-from examples.resnet.gen_aespa_weights.HerPN import get_Aespa_MutalChannel_PAF_resnet18, get_Aespa_MutalChannel_PAF_resnet20
-
+from examples.resnet.gen_weights.HerPN import  get_Aespa_MutalChannel_PAF_resnet20
 from .utils import min_padding_to_next_multiple_of_k, perfect_square_split
 
 
