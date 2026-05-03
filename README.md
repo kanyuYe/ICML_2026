@@ -2,7 +2,9 @@
 
 > **GPU runtime note**
 >
-> PackCNN supports PPML inference based on EasyFHE/GPU-FHE. Because CPU-based execution is very slow for this workload, this README uses the GPU version as the default example.
+> PackCNN supports PPML inference based on EasyFHE, an open-source homomorphic encryption library with GPU support.
+>
+> Because CPU-based execution is very slow for this workload, this README uses the GPU version as the default example.
 >
 > The GPU used for running this example should have **at least 80GB of GPU memory**, such as an **NVIDIA H100**.
 
@@ -45,6 +47,9 @@ PackCNN/
 - `pack/utils.py`: Shared mathematical and indexing utilities.
 
 ## Installation
+
+EasyFHE is a public and representative GPU-accelerated FHE framework. It provides rich support for homomorphic operations and application-level examples, making it suitable for building PPML inference workloads such as packed CNN inference.So we ues EasyFHE as the underlying FHE runtime framework.
+
 
 Install EasyFHE first:
 
@@ -92,7 +97,7 @@ export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
 USE_DISTRIBUTED=0 USE_MKLDNN=0 BUILD_TEST=0 USE_FBGEMM=0 USE_NNPACK=0 USE_QNNPACK=0 USE_XNNPACK=0 USE_NINJA=OFF USE_ROCM=0 python3 setup.py develop --install-dir=~/torch/
 ```
 
-After EasyFHE is installed, extract or place this project under the EasyFHE/GPU-FHE workspace:
+After EasyFHE is installed, extract or place this project under the EasyFHE workspace:
 
 ```bash
 unzip PackCNN.zip -d ~/PNP/EasyFHE/PackCNN
@@ -154,3 +159,7 @@ Replace /encode_20260425_143126.pkl with the actual encoded weight file generate
 `run.py` contains only the command-line entry logic.
 
 All core execution logic is implemented in `pack/pipeline.py`, with supporting functionality provided by the modules under `pack/`.
+
+## CPU Version
+If you need to run the CPU version, modify the Python source files and replace all occurrences of `cuda` with `cpu` in the relevant `.py` files.
+
