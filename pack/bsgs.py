@@ -1,5 +1,3 @@
-"""BSGS-style plaintext weight preparation helpers."""
-
 import numpy as np
 
 from .model import get_weight_bias
