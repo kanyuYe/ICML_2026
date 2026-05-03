@@ -1,5 +1,3 @@
-"""Runtime configuration for the refactored PackCNN package."""
-
 import os
 import sys
 
