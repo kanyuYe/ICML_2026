@@ -55,8 +55,7 @@ source ./.venv/bin/activate
 git clone --recursive -b release-1.0 git@github.com:jizhuoran/EasyFHE.git
 
 # Method 2: If SSH fails (e.g., SSH key not configured), use HTTPS instead
-git clone --recursive -b release-1.0 https://github.com/jizhuoran/EasyFHE.git
-
+# git clone --recursive -b release-1.0 https://github.com/jizhuoran/EasyFHE.git
 cd EasyFHE
 
 pip install -r requirements.txt
@@ -67,11 +66,20 @@ export CUDA_HOME=$CUDA_HOME:/usr/local/cuda
 
 USE_DISTRIBUTED=0 USE_MKLDNN=0 BUILD_TEST=0 USE_FBGEMM=0 USE_NNPACK=0 USE_QNNPACK=0 USE_XNNPACK=0 USE_NINJA=OFF USE_ROCM=0 python3 setup.py develop --install-dir=~/torch/
 ```
+If the  build runs into  Cannot find CUB. error use:
+```bash
+export CUB_INCLUDE_DIR=/usr/local/cuda-12.8/include/cub
+export CMAKE_INCLUDE_PATH=/usr/local/cuda-12.8/include/cub:$CMAKE_INCLUDE_PATH
+export CUDA_HOME=/usr/local/cuda-12.8
+export PATH=$CUDA_HOME/bin:$PATH
+export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
 
+USE_DISTRIBUTED=0 USE_MKLDNN=0 BUILD_TEST=0 USE_FBGEMM=0 USE_NNPACK=0 USE_QNNPACK=0 USE_XNNPACK=0 USE_NINJA=OFF USE_ROCM=0 python3 setup.py develop --install-dir=~/torch/
+```
 Extract or place this project under the EasyFHE/GPU-FHE workspace:
 
 ```bash
-unzip PackCNN.zip -d ./PNP/EasyFHE/PackCNN
+unzip PackCNN.zip -d ~/PNP/EasyFHE/PackCNN
 ```
 
 ## Runtime Data Directory
@@ -88,7 +96,7 @@ This directory is used for GPU-FHE context files, encrypted input checkpoints, a
 Run commands from the project directory:
 
 ```bash
-cd ./PNP/EasyFHE/PackCNN
+cd ~/PNP/EasyFHE/PackCNN
 ```
 
 Before running the main program, please run the setup script to configure the required files:
