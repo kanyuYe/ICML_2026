@@ -51,7 +51,12 @@ cd ./PNP
 python3 -m venv .venv
 source ./.venv/bin/activate
 
+# Method 1: Clone via SSH (recommended)
 git clone --recursive -b release-1.0 git@github.com:jizhuoran/EasyFHE.git
+
+# Method 2: If SSH fails (e.g., SSH key not configured), use HTTPS instead
+git clone --recursive -b release-1.0 https://github.com/jizhuoran/EasyFHE.git
+
 cd EasyFHE
 
 pip install -r requirements.txt
