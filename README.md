@@ -134,6 +134,8 @@ python3 run.py 0 0
 
 Notes:
 
+- During the first run, the final stage generates an encoded weight .pkl file. This step may take a few minutes.
+- After the encoded weight file has been generated, it can be reused for subsequent inference runs.
 - First-time preprocessing performs weight encoding and preloading, which may take a long time.
 - The generated `.pkl` files may require approximately 60 GB of storage.
 - Ensure that `DATA_DIR` has enough available disk space before starting preprocessing.
@@ -143,8 +145,9 @@ Notes:
 After the encoded `.pkl` file has been generated, run inference by passing the generated filename:
 
 ```bash
-python3 run.py 1 /encode_20260503_143126.pkl
+python3 run.py 1 /encode_20260425_143126.pkl
 ```
+Replace /encode_20260425_143126.pkl with the actual encoded weight file generated during the first run.
 
 ## Entry Points
 
