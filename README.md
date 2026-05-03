@@ -55,14 +55,16 @@ cd ./PNP
 
 python3 -m venv .venv
 source ./.venv/bin/activate
+# Clone EasyFHE using ONE of the following methods.
 
-# Method 1: Clone via SSH (recommended)
+# Option 1: SSH, recommended if your GitHub SSH key is configured.
 git clone --recursive -b release-1.0 git@github.com:jizhuoran/EasyFHE.git
 
-# Method 2: If SSH fails (e.g., SSH key not configured), use HTTPS instead
+# Option 2: HTTPS, use this if SSH is not available.
+# Uncomment the following command and comment out the SSH command above if needed.
 # git clone --recursive -b release-1.0 https://github.com/jizhuoran/EasyFHE.git
-cd EasyFHE
 
+cd EasyFHE
 pip install -r requirements.txt
 
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
