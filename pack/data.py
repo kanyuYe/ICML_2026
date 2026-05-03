@@ -1,5 +1,3 @@
-"""Input image loading and encrypted batch preparation."""
-
 from .config import project_root  # Ensures runtime paths and DATA_DIR match the original script.
 
 import csv
