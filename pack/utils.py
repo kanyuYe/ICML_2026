@@ -1,5 +1,3 @@
-"""Shared utility functions for PackCNN."""
-
 import math
 import numpy as np
 
