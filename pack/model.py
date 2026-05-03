@@ -1,5 +1,3 @@
-"""Model parameter extraction and final classifier stages."""
-
 from .config import project_root  # Ensures runtime paths and DATA_DIR match the original script.
 
 import math
