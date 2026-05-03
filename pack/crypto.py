@@ -360,7 +360,7 @@ def batch_homo_relu2(input, filename, cryptoContext, left_mask, bottom_mask):
     return input
 
 
-@fhe.utils.profile_python_function
+# @fhe.utils.profile_python_function
 def batch_homo_bs(input, index, logBsSlots_list, levelBudget_list, cryptoContext):
     output = np.empty((input.shape[0], input.shape[1], input.shape[2]), dtype=object)
     for i in range(input.shape[0]):
