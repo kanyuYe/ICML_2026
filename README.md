@@ -1,6 +1,10 @@
 # PackCNN
 
-PackCNN is a PPML inference implementation built on EasyFHE/GPU-FHE. 
+> **GPU runtime note**
+>
+> PackCNN supports PPML inference based on EasyFHE/GPU-FHE. Because CPU-based execution is very slow for this workload, this README uses the GPU version as the default example.
+>
+> The GPU used for running this example should have **at least 80GB of GPU memory**, such as an **NVIDIA H100**.
 
 ## Project Structure
 
